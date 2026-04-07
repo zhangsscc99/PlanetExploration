@@ -64,7 +64,7 @@
         <div id="score">收集的晶体: 0</div>
     </div>
     <div id="controls">
-        WASD 移动 | 鼠标拖拽旋转视角 | 空格跳跃
+        WASD 移动 | 鼠标拖拽旋转视角 | 滚轮缩放 | 空格跳跃
     </div>
     <canvas id="gameCanvas"></canvas>
 
@@ -79,7 +79,6 @@
 
     <script type="module">
         import * as THREE from 'three';
-        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 
         // 游戏状态
@@ -108,6 +107,17 @@
             apexHangVelocity: 1.4,
             apexGravityScale: 0.45
         };
+        const cameraState = {
+            yaw: Math.PI,
+            pitch: 0.35,
+            distance: 9,
+            minDistance: 4.5,
+            maxDistance: 14,
+            rotateSensitivity: 0.004,
+            isDragging: false,
+            lastX: 0,
+            lastY: 0
+        };
 
         // 场景设置
         const scene = new THREE.Scene();
@@ -125,11 +135,9 @@
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-        // 控制器
-        const controls = new OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
-        controls.dampingFactor = 0.05;
-        controls.maxPolarAngle = Math.PI / 2.2;
+        function clamp(value, min, max) {
+            return Math.max(min, Math.min(max, value));
+        }
 
         // 光照
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -144,30 +152,44 @@
         directionalLight.shadow.camera.bottom = -20;
         scene.add(directionalLight);
 
-        // 创建地面（克罗斯星地面）
+        // 创建地面（四块拼接）
         function createGround() {
-            const geometry = new THREE.PlaneGeometry(30, 30, 50, 50);
-
-            // 添加高度变化
-            const positions = geometry.attributes.position;
-            for (let i = 0; i < positions.count; i++) {
-                const x = positions.getX(i);
-                const y = positions.getY(i);
-                const noise = Math.sin(x * 0.3) * Math.cos(y * 0.3) * 0.3;
-                positions.setZ(i, noise);
-            }
-            geometry.computeVertexNormals();
-
+            const tileSize = 30;
+            const tileSegments = 50;
             const material = new THREE.MeshStandardMaterial({
                 color: 0xF28A66,
                 roughness: 0.8,
                 metalness: 0.2
             });
 
-            const ground = new THREE.Mesh(geometry, material);
-            ground.rotation.x = -Math.PI / 2;
-            ground.receiveShadow = true;
-            scene.add(ground);
+            const tileOffsets = [
+                [-tileSize / 2, -tileSize / 2],
+                [ tileSize / 2, -tileSize / 2],
+                [-tileSize / 2,  tileSize / 2],
+                [ tileSize / 2,  tileSize / 2]
+            ];
+
+            tileOffsets.forEach(([offsetX, offsetZ]) => {
+                const geometry = new THREE.PlaneGeometry(tileSize, tileSize, tileSegments, tileSegments);
+                const positions = geometry.attributes.position;
+
+                // 使用世界坐标采样噪声，保证四块拼接处连续
+                for (let i = 0; i < positions.count; i++) {
+                    const localX = positions.getX(i);
+                    const localY = positions.getY(i);
+                    const worldX = localX + offsetX;
+                    const worldZ = localY + offsetZ;
+                    const noise = Math.sin(worldX * 0.3) * Math.cos(worldZ * 0.3) * 0.3;
+                    positions.setZ(i, noise);
+                }
+                geometry.computeVertexNormals();
+
+                const groundTile = new THREE.Mesh(geometry, material);
+                groundTile.rotation.x = -Math.PI / 2;
+                groundTile.position.set(offsetX, 0, offsetZ);
+                groundTile.receiveShadow = true;
+                scene.add(groundTile);
+            });
         }
 
         // 创建岩石
@@ -270,6 +292,37 @@
             animationState.visualRoot.rotation.x = isMoving ? Math.sin(t * 2.0) * 0.03 : 0;
         }
 
+        function removeRobotBaseMeshes(root) {
+            const toRemove = [];
+            root.traverse((child) => {
+                if (!child.isMesh) return;
+
+                const name = (child.name || '').toLowerCase();
+                const geometry = child.geometry;
+                if (!geometry) return;
+
+                if (!geometry.boundingBox) geometry.computeBoundingBox();
+                const box = geometry.boundingBox;
+                if (!box) return;
+
+                const size = new THREE.Vector3();
+                box.getSize(size);
+                const worldPos = child.getWorldPosition(new THREE.Vector3());
+
+                const isDiskLike = size.y > 0 && (size.x > size.y * 3.5 || size.z > size.y * 3.5);
+                const isNearGround = worldPos.y < 0.35;
+                const byName = name.includes('base') || name.includes('plate') || name.includes('pedestal') || name.includes('ground');
+
+                if ((isDiskLike && isNearGround) || byName) {
+                    toRemove.push(child);
+                }
+            });
+
+            toRemove.forEach((mesh) => {
+                if (mesh.parent) mesh.parent.remove(mesh);
+            });
+        }
+
         // 创建玩家（优先加载机器人 FBX）
         async function createPlayer() {
             const loader = new FBXLoader();
@@ -296,6 +349,7 @@
                 const normalizedBox = new THREE.Box3().setFromObject(robot);
                 const center = normalizedBox.getCenter(new THREE.Vector3());
                 robot.position.set(-center.x, -normalizedBox.min.y, -center.z);
+                removeRobotBaseMeshes(robot);
 
                 robotRoot.position.copy(gameState.playerPos);
                 scene.add(robotRoot);
@@ -329,6 +383,36 @@
         }
 
         let player = null;
+
+        // 鼠标拖拽相机
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            cameraState.isDragging = true;
+            cameraState.lastX = e.clientX;
+            cameraState.lastY = e.clientY;
+        });
+
+        window.addEventListener('mouseup', () => {
+            cameraState.isDragging = false;
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!cameraState.isDragging) return;
+            const dx = e.clientX - cameraState.lastX;
+            const dy = e.clientY - cameraState.lastY;
+            cameraState.lastX = e.clientX;
+            cameraState.lastY = e.clientY;
+
+            cameraState.yaw -= dx * cameraState.rotateSensitivity;
+            cameraState.pitch -= dy * cameraState.rotateSensitivity;
+            cameraState.pitch = clamp(cameraState.pitch, -0.35, 1.2);
+        });
+
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            cameraState.distance += e.deltaY * 0.01;
+            cameraState.distance = clamp(cameraState.distance, cameraState.minDistance, cameraState.maxDistance);
+        }, { passive: false });
 
         // 键盘事件
         window.addEventListener('keydown', (e) => {
@@ -411,11 +495,15 @@
                 }
             });
 
-            // 相机跟随
-            camera.position.x = gameState.playerPos.x;
-            camera.position.z = gameState.playerPos.z + 8;
-            camera.position.y = gameState.playerPos.y + 5;
-            controls.target.copy(gameState.playerPos);
+            // 第三人称相机跟随（由鼠标拖拽控制角度）
+            const horizontal = Math.cos(cameraState.pitch) * cameraState.distance;
+            const cameraOffset = new THREE.Vector3(
+                Math.sin(cameraState.yaw) * horizontal,
+                Math.sin(cameraState.pitch) * cameraState.distance + 2.2,
+                Math.cos(cameraState.yaw) * horizontal
+            );
+            camera.position.copy(gameState.playerPos).add(cameraOffset);
+            camera.lookAt(gameState.playerPos.x, gameState.playerPos.y + 1.2, gameState.playerPos.z);
         }
 
         // 动画循环
@@ -434,7 +522,6 @@
                 }
             });
 
-            controls.update();
             renderer.render(scene, camera);
         }
 
