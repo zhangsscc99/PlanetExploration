@@ -108,6 +108,10 @@
             tmpNormal: new THREE.Vector3(),
             tmpPoint: new THREE.Vector3()
         };
+        const modelFit = {
+            targetHeight: 1.8,
+            footGroundOffset: 0.03
+        };
         const physics = {
             groundY: 1,
             jumpVelocity: 6.8,
@@ -371,6 +375,9 @@
                 const robotRoot = new THREE.Group();
                 robotRoot.add(robot);
 
+                // 先移除底座，再做尺寸归一和落地对齐，避免脚底悬空
+                removeRobotBaseMeshes(robot);
+
                 robot.traverse((child) => {
                     if (child.isMesh) {
                         child.castShadow = true;
@@ -381,15 +388,17 @@
                 const box = new THREE.Box3().setFromObject(robot);
                 const size = box.getSize(new THREE.Vector3());
                 if (size.y > 0) {
-                    const targetHeight = 1.8;
-                    const scaleFactor = targetHeight / size.y;
+                    const scaleFactor = modelFit.targetHeight / size.y;
                     robot.scale.setScalar(scaleFactor);
                 }
 
                 const normalizedBox = new THREE.Box3().setFromObject(robot);
                 const center = normalizedBox.getCenter(new THREE.Vector3());
-                robot.position.set(-center.x, -normalizedBox.min.y, -center.z);
-                removeRobotBaseMeshes(robot);
+                robot.position.set(
+                    -center.x,
+                    -normalizedBox.min.y - modelFit.footGroundOffset,
+                    -center.z
+                );
 
                 robotRoot.position.copy(gameState.playerPos);
                 scene.add(robotRoot);
@@ -595,6 +604,10 @@
             const loadingEl = document.getElementById('loading');
             loadingEl.textContent = '加载机器人模型中...';
             player = await createPlayer();
+            if (player) {
+                // 进入场景时让角色背对镜头，符合第三人称视角习惯
+                player.rotation.y = Math.PI;
+            }
             loadingEl.style.display = 'none';
             animate();
         }
