@@ -154,6 +154,11 @@
             return Math.max(min, Math.min(max, value));
         }
 
+        // 地面与 createGround 使用同一套高度函数，保证角色贴地
+        function getGroundHeightAt(x, z) {
+            return Math.sin(x * 0.3) * Math.cos(z * 0.3) * 0.3;
+        }
+
         // 光照
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
         scene.add(ambientLight);
@@ -505,9 +510,10 @@
             gameState.playerVelocity.y = Math.max(gameState.playerVelocity.y, -physics.maxFallSpeed);
             gameState.playerPos.y += gameState.playerVelocity.y * delta;
 
-            // 地面碰撞
-            if (gameState.playerPos.y <= physics.groundY) {
-                gameState.playerPos.y = physics.groundY;
+            // 地形碰撞：基于当前 x/z 实时贴合地面高度
+            const terrainGroundY = getGroundHeightAt(gameState.playerPos.x, gameState.playerPos.z) + modelFit.footGroundOffset;
+            if (gameState.playerPos.y <= terrainGroundY) {
+                gameState.playerPos.y = terrainGroundY;
                 gameState.playerVelocity.y = 0;
                 gameState.isJumping = false;
             }
@@ -606,7 +612,7 @@
             player = await createPlayer();
             if (player) {
                 // 进入场景时让角色背对镜头，符合第三人称视角习惯
-                player.rotation.y = Math.PI;
+                player.rotation.y += Math.PI;
             }
             loadingEl.style.display = 'none';
             animate();
