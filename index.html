@@ -490,10 +490,18 @@
             const speed = 5 * delta;
             const moveDir = new THREE.Vector3();
 
-            if (gameState.keys['w']) moveDir.z -= 1;
-            if (gameState.keys['s']) moveDir.z += 1;
-            if (gameState.keys['a']) moveDir.x -= 1;
-            if (gameState.keys['d']) moveDir.x += 1;
+            // 以相机朝向为基准的移动方向，W 永远是"前进"
+            const camForward = new THREE.Vector3(
+                -Math.sin(cameraState.yaw), 0, -Math.cos(cameraState.yaw)
+            );
+            const camRight = new THREE.Vector3(
+                Math.cos(cameraState.yaw), 0, -Math.sin(cameraState.yaw)
+            );
+
+            if (gameState.keys['w']) moveDir.add(camForward);
+            if (gameState.keys['s']) moveDir.sub(camForward);
+            if (gameState.keys['a']) moveDir.sub(camRight);
+            if (gameState.keys['d']) moveDir.add(camRight);
 
             if (moveDir.length() > 0) {
                 moveDir.normalize();
@@ -611,8 +619,7 @@
             loadingEl.textContent = '加载机器人模型中...';
             player = await createPlayer();
             if (player) {
-                // 进入场景时让角色背对镜头，符合第三人称视角习惯
-                player.rotation.y += Math.PI;
+                player.rotation.y = 0;
             }
             loadingEl.style.display = 'none';
             animate();
