@@ -101,7 +101,12 @@
         const modelTrim = {
             enabled: true,
             bottomClip: 0.08, // 先裁一点点，后续可继续加大
-            clipPlane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+            clipPlane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
+            clipTarget: null,
+            localClipHeight: 0,
+            tmpQuat: new THREE.Quaternion(),
+            tmpNormal: new THREE.Vector3(),
+            tmpPoint: new THREE.Vector3()
         };
         const physics = {
             groundY: 1,
@@ -248,6 +253,10 @@
             scene.add(fallback);
             animationState.visualRoot = fallback;
             animationState.baseVisualY = 0;
+            if (modelTrim.enabled) {
+                applyTrimMaterialClipping(fallback);
+                calibrateModelTrim(fallback);
+            }
             return fallback;
         }
 
@@ -298,6 +307,31 @@
             animationState.visualRoot.rotation.x = isMoving ? Math.sin(t * 2.0) * 0.03 : 0;
         }
 
+        function applyTrimMaterialClipping(root) {
+            root.traverse((child) => {
+                if (!child.isMesh) return;
+                const mats = Array.isArray(child.material) ? child.material : [child.material];
+                mats.forEach((mat) => {
+                    if (!mat) return;
+                    mat.clippingPlanes = [modelTrim.clipPlane];
+                    mat.clipShadows = true;
+                    mat.needsUpdate = true;
+                });
+            });
+        }
+
+        function calibrateModelTrim(target) {
+            if (!modelTrim.enabled || !target) return;
+            const referenceWorld = new THREE.Vector3(
+                gameState.playerPos.x,
+                gameState.playerPos.y + modelTrim.bottomClip,
+                gameState.playerPos.z
+            );
+            const referenceLocal = target.worldToLocal(referenceWorld.clone());
+            modelTrim.clipTarget = target;
+            modelTrim.localClipHeight = referenceLocal.y;
+        }
+
         function removeRobotBaseMeshes(root) {
             const toRemove = [];
             root.traverse((child) => {
@@ -341,15 +375,6 @@
                     if (child.isMesh) {
                         child.castShadow = true;
                         child.receiveShadow = true;
-                        if (modelTrim.enabled) {
-                            const mats = Array.isArray(child.material) ? child.material : [child.material];
-                            mats.forEach((mat) => {
-                                if (!mat) return;
-                                mat.clippingPlanes = [modelTrim.clipPlane];
-                                mat.clipShadows = true;
-                                mat.needsUpdate = true;
-                            });
-                        }
                     }
                 });
 
@@ -370,6 +395,10 @@
                 scene.add(robotRoot);
                 animationState.visualRoot = robot;
                 animationState.baseVisualY = robot.position.y;
+                if (modelTrim.enabled) {
+                    applyTrimMaterialClipping(robot);
+                    calibrateModelTrim(robot);
+                }
                 setupAnimationActions(robot);
                 return robotRoot;
             } catch (error) {
@@ -485,7 +514,17 @@
             }
 
             if (modelTrim.enabled) {
-                modelTrim.clipPlane.constant = -(gameState.playerPos.y + modelTrim.bottomClip);
+                const clipTarget = modelTrim.clipTarget || animationState.visualRoot || player;
+                if (clipTarget) {
+                    const normal = modelTrim.tmpNormal
+                        .set(0, 1, 0)
+                        .applyQuaternion(clipTarget.getWorldQuaternion(modelTrim.tmpQuat))
+                        .normalize();
+                    const point = clipTarget.localToWorld(
+                        modelTrim.tmpPoint.set(0, modelTrim.localClipHeight, 0)
+                    );
+                    modelTrim.clipPlane.setFromNormalAndCoplanarPoint(normal, point);
+                }
             }
 
             if (isMoving) {
