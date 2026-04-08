@@ -187,7 +187,10 @@
             root: null,
             healthBar: null,
             healthFill: null,
-            alive: false
+            alive: false,
+            flashTimer: 0,
+            flashDuration: 0.16,
+            isFlashing: false
         };
         const playerState = {
             maxHp: 100,
@@ -427,18 +430,45 @@
                 const mats = Array.isArray(child.material) ? child.material : [child.material];
                 const tinted = mats.map((mat) => {
                     const cloned = mat.clone();
-                    if (cloned.color) cloned.color.setHex(0xff0000);
+                    if (cloned.color) cloned.color.setHex(0x8b1f1f);
                     if (cloned.map) cloned.map = null;
                     if (cloned.emissive) {
-                        cloned.emissive.setHex(0xff2222);
-                        cloned.emissiveIntensity = 0.45;
+                        cloned.emissive.setHex(0x220000);
+                        cloned.emissiveIntensity = 0.2;
                     }
                     if ('roughness' in cloned) cloned.roughness = 0.45;
                     if ('metalness' in cloned) cloned.metalness = 0.18;
+                    cloned.userData.enemyBaseColor = 0x8b1f1f;
+                    cloned.userData.enemyBaseEmissive = 0x220000;
+                    cloned.userData.enemyBaseEmissiveIntensity = 0.2;
+                    cloned.userData.enemyHitColor = 0xff2d2d;
+                    cloned.userData.enemyHitEmissive = 0xff2222;
+                    cloned.userData.enemyHitEmissiveIntensity = 0.5;
                     return cloned;
                 });
                 child.material = Array.isArray(child.material) ? tinted : tinted[0];
             });
+        }
+
+        function setEnemyFlashVisual(root, flashing) {
+            if (!root) return;
+            root.traverse((child) => {
+                if (!child.isMesh || !child.material) return;
+                const mats = Array.isArray(child.material) ? child.material : [child.material];
+                mats.forEach((mat) => {
+                    const data = mat.userData || {};
+                    if (mat.color) {
+                        mat.color.setHex(flashing ? (data.enemyHitColor || 0xff2d2d) : (data.enemyBaseColor || 0x8b1f1f));
+                    }
+                    if (mat.emissive) {
+                        mat.emissive.setHex(flashing ? (data.enemyHitEmissive || 0xff2222) : (data.enemyBaseEmissive || 0x220000));
+                        mat.emissiveIntensity = flashing
+                            ? (data.enemyHitEmissiveIntensity ?? 0.5)
+                            : (data.enemyBaseEmissiveIntensity ?? 0.2);
+                    }
+                });
+            });
+            enemyState.isFlashing = flashing;
         }
 
         function createEnemyHealthBar(targetRoot) {
@@ -611,11 +641,21 @@
                     -center.z
                 );
 
-                const enemyX = gameState.playerPos.x + 6;
-                const enemyZ = gameState.playerPos.z - 6;
+                const spawnDistance = 24;
+                const playerYaw = player ? player.rotation.y : 0;
+                const forward = new THREE.Vector3(
+                    Math.sin(playerYaw),
+                    0,
+                    Math.cos(playerYaw)
+                ).normalize();
+                const enemyX = gameState.playerPos.x + forward.x * spawnDistance;
+                const enemyZ = gameState.playerPos.z + forward.z * spawnDistance;
                 const enemyY = getGroundHeightAt(enemyX, enemyZ) + modelFit.footGroundOffset;
                 enemyRoot.position.set(enemyX, enemyY, enemyZ);
-                enemyRoot.rotation.y = -Math.PI * 0.75;
+                enemyRoot.rotation.y = Math.atan2(
+                    gameState.playerPos.x - enemyX,
+                    gameState.playerPos.z - enemyZ
+                );
                 scene.add(enemyRoot);
                 if (enemyTrim.enabled) {
                     applyTrimMaterialClipping(robot, enemyTrim);
@@ -624,6 +664,9 @@
                 enemyState.root = enemyRoot;
                 enemyState.hp = enemyState.maxHp;
                 enemyState.alive = true;
+                enemyState.flashTimer = 0;
+                enemyState.isFlashing = false;
+                setEnemyFlashVisual(enemyRoot, false);
                 createEnemyHealthBar(enemyRoot);
                 return enemyRoot;
             } catch (error) {
@@ -711,6 +754,8 @@
                     if (hitDist < 1.1) {
                         bullet.mesh.position.copy(closest);
                         enemyState.hp = Math.max(0, enemyState.hp - 10);
+                        enemyState.flashTimer = enemyState.flashDuration;
+                        setEnemyFlashVisual(enemyState.root, true);
                         updateEnemyHealthBar();
                         hitEnemy = true;
                         if (enemyState.hp <= 0) {
@@ -734,6 +779,12 @@
             if (!enemyState.alive || !enemyState.root) return;
             if (playerState.cooldownLeft > 0) {
                 playerState.cooldownLeft = Math.max(0, playerState.cooldownLeft - delta);
+            }
+            if (enemyState.flashTimer > 0) {
+                enemyState.flashTimer = Math.max(0, enemyState.flashTimer - delta);
+                if (enemyState.flashTimer <= 0 && enemyState.isFlashing) {
+                    setEnemyFlashVisual(enemyState.root, false);
+                }
             }
 
             const toPlayer = new THREE.Vector3(
@@ -951,10 +1002,10 @@
             playerState.cooldownLeft = 0;
             updatePlayerHealthUI();
             player = await createPlayer();
-            enemy = await createEnemy();
             if (player) {
                 player.rotation.y = 0;
             }
+            enemy = await createEnemy();
             loadingEl.style.display = 'none';
             animate();
         }
