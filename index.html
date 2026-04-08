@@ -55,6 +55,30 @@
             font-size: 24px;
             text-align: center;
         }
+
+        #gameOverOverlay {
+            position: absolute;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 14px;
+            background: rgba(0, 0, 0, 0.45);
+            z-index: 30;
+            color: #fff;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+        }
+
+        #restartBtn {
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            background: #ff6a4d;
+            color: #fff;
+            font-size: 16px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -66,6 +90,10 @@
     </div>
     <div id="controls">
         WASD 移动 | 鼠标拖拽旋转视角 | 滚轮缩放 | 空格跳跃 | J 射击
+    </div>
+    <div id="gameOverOverlay">
+        <div>主角已被击败</div>
+        <button id="restartBtn">重新开始</button>
     </div>
     <canvas id="gameCanvas"></canvas>
 
@@ -88,7 +116,8 @@
             playerPos: new THREE.Vector3(0, 1, 5),
             playerVelocity: new THREE.Vector3(0, 0, 0),
             isJumping: false,
-            keys: {}
+            keys: {},
+            isGameOver: false
         };
         const animationState = {
             mixer: null,
@@ -164,7 +193,7 @@
             maxHp: 100,
             hp: 100,
             touchDamage: 5,
-            hitCooldown: 0.55,
+            hitCooldown: 1.5,
             cooldownLeft: 0
         };
 
@@ -462,6 +491,14 @@
             }
         }
 
+        function setGameOver() {
+            if (gameState.isGameOver) return;
+            gameState.isGameOver = true;
+            gameState.keys = {};
+            const overlay = document.getElementById('gameOverOverlay');
+            if (overlay) overlay.style.display = 'flex';
+        }
+
         function removeRobotBaseMeshes(root) {
             const toRemove = [];
             root.traverse((child) => {
@@ -642,7 +679,8 @@
             shootingState.bullets.push({
                 mesh: bullet,
                 velocity: dir.multiplyScalar(shootingState.speed),
-                life: shootingState.life
+                life: shootingState.life,
+                prevPos: spawn.clone()
             });
             shootingState.cooldownLeft = shootingState.cooldown;
         }
@@ -655,12 +693,23 @@
             for (let i = shootingState.bullets.length - 1; i >= 0; i--) {
                 const bullet = shootingState.bullets[i];
                 bullet.life -= delta;
+                bullet.prevPos.copy(bullet.mesh.position);
                 bullet.mesh.position.addScaledVector(bullet.velocity, delta);
 
                 let hitEnemy = false;
                 if (enemyState.alive && enemyState.root) {
-                    const hitDist = bullet.mesh.position.distanceTo(enemyState.root.position);
+                    // 用线段-球体检测，避免高速子弹穿透敌人
+                    const start = bullet.prevPos;
+                    const end = bullet.mesh.position;
+                    const seg = new THREE.Vector3().subVectors(end, start);
+                    const toEnemy = new THREE.Vector3().subVectors(enemyState.root.position, start);
+                    const segLenSq = Math.max(seg.lengthSq(), 1e-6);
+                    const t = clamp(toEnemy.dot(seg) / segLenSq, 0, 1);
+                    const closest = start.clone().addScaledVector(seg, t);
+                    const hitDist = closest.distanceTo(enemyState.root.position);
+
                     if (hitDist < 1.1) {
+                        bullet.mesh.position.copy(closest);
                         enemyState.hp = Math.max(0, enemyState.hp - 10);
                         updateEnemyHealthBar();
                         hitEnemy = true;
@@ -715,6 +764,9 @@
                 playerState.hp = Math.max(0, playerState.hp - playerState.touchDamage);
                 playerState.cooldownLeft = playerState.hitCooldown;
                 updatePlayerHealthUI();
+                if (playerState.hp <= 0) {
+                    setGameOver();
+                }
             }
         }
 
@@ -750,6 +802,7 @@
 
         // 键盘事件
         window.addEventListener('keydown', (e) => {
+            if (gameState.isGameOver) return;
             gameState.keys[e.key.toLowerCase()] = true;
             if (e.key === ' ' && !gameState.isJumping) {
                 gameState.playerVelocity.y = physics.jumpVelocity;
@@ -860,11 +913,13 @@
             requestAnimationFrame(animate);
 
             const delta = clock.getDelta();
-            updatePlayer(delta);
-            updateEnemy(delta);
-            updateBullets(delta);
-            if (enemy) {
-                updateTrimPlane(enemyTrim, enemy);
+            if (!gameState.isGameOver) {
+                updatePlayer(delta);
+                updateEnemy(delta);
+                updateBullets(delta);
+                if (enemy) {
+                    updateTrimPlane(enemyTrim, enemy);
+                }
             }
 
             // 晶体旋转动画
@@ -889,6 +944,9 @@
         async function startGame() {
             const loadingEl = document.getElementById('loading');
             loadingEl.textContent = '加载机器人模型中...';
+            gameState.isGameOver = false;
+            const overlay = document.getElementById('gameOverOverlay');
+            if (overlay) overlay.style.display = 'none';
             playerState.hp = playerState.maxHp;
             playerState.cooldownLeft = 0;
             updatePlayerHealthUI();
@@ -923,6 +981,13 @@
 
             poll();
             setInterval(poll, 1200);
+        }
+
+        const restartBtn = document.getElementById('restartBtn');
+        if (restartBtn) {
+            restartBtn.addEventListener('click', () => {
+                window.location.reload();
+            });
         }
 
         enableHotReload();
