@@ -183,7 +183,10 @@
         };
         const levelState = {
             current: 1,
-            wave2Spawned: false
+            wave2Spawned: false,
+            wave2BuffDropsTotal: 0,
+            wave2BuffCollected: 0,
+            bossSpawned: false
         };
         const playerState = {
             maxHp: 100,
@@ -194,9 +197,7 @@
             attackSpeedMultiplier: 1
         };
         const buffState = {
-            drop: null,
-            dropped: false,
-            collected: false,
+            drops: [],
             bobTime: 0
         };
 
@@ -550,9 +551,7 @@
             if (overlay) overlay.style.display = 'flex';
         }
 
-        function spawnAttackSpeedBuff(position) {
-            if (buffState.dropped || buffState.collected) return;
-
+        function spawnAttackSpeedBuff(position, dropType = 'generic') {
             const buffGeometry = new THREE.OctahedronGeometry(0.35, 0);
             const buffMaterial = new THREE.MeshStandardMaterial({
                 color: 0x66ffcc,
@@ -567,25 +566,38 @@
             buff.position.y += 1.2;
             scene.add(buff);
 
-            buffState.drop = buff;
-            buffState.dropped = true;
-            buffState.bobTime = 0;
+            buffState.drops.push({ mesh: buff, type: dropType });
         }
 
         function updateBuff(delta) {
-            if (!buffState.drop || !player) return;
+            if (buffState.drops.length === 0 || !player) return;
             buffState.bobTime += delta;
-            buffState.drop.rotation.y += delta * 1.8;
-            buffState.drop.position.y += Math.sin(buffState.bobTime * 3.5) * 0.0025;
+            const bobOffset = Math.sin(buffState.bobTime * 3.5) * 0.0025;
 
-            const pickupDist = player.position.distanceTo(buffState.drop.position);
-            if (pickupDist < 1.1) {
-                scene.remove(buffState.drop);
-                buffState.drop = null;
-                buffState.collected = true;
-                playerState.attackSpeedMultiplier *= 1.1;
-                updateBuffUI();
-                spawnLevelTwoEnemies();
+            for (let i = buffState.drops.length - 1; i >= 0; i--) {
+                const drop = buffState.drops[i];
+                const mesh = drop.mesh;
+                mesh.rotation.y += delta * 1.8;
+                mesh.position.y += bobOffset;
+
+                const pickupDist = player.position.distanceTo(mesh.position);
+                if (pickupDist < 1.1) {
+                    scene.remove(mesh);
+                    buffState.drops.splice(i, 1);
+                    playerState.attackSpeedMultiplier *= 1.1;
+                    updateBuffUI();
+                    if (drop.type === 'wave1' && levelState.current === 1) {
+                        spawnLevelTwoEnemies();
+                    } else if (drop.type === 'wave2') {
+                        levelState.wave2BuffCollected += 1;
+                        if (
+                            levelState.wave2BuffCollected >= levelState.wave2BuffDropsTotal &&
+                            !levelState.bossSpawned
+                        ) {
+                            spawnBossEnemy();
+                        }
+                    }
+                }
             }
         }
 
@@ -669,9 +681,15 @@
             }
         }
 
-        async function createEnemyAt(enemyX, enemyZ) {
+        async function createEnemyAt(enemyX, enemyZ, options = {}) {
             const loader = new FBXLoader();
             try {
+                const {
+                    maxHp = enemyConfig.maxHp,
+                    speed = enemyConfig.speed,
+                    scaleMultiplier = 1,
+                    dropType = 'generic'
+                } = options;
                 const robot = await loader.loadAsync('robot.fbx');
                 const enemyRoot = new THREE.Group();
                 enemyRoot.add(robot);
@@ -689,7 +707,7 @@
                 const box = new THREE.Box3().setFromObject(robot);
                 const size = box.getSize(new THREE.Vector3());
                 if (size.y > 0) {
-                    const scaleFactor = modelFit.targetHeight / size.y;
+                    const scaleFactor = (modelFit.targetHeight * scaleMultiplier) / size.y;
                     robot.scale.setScalar(scaleFactor);
                 }
 
@@ -713,9 +731,9 @@
                 calibrateModelTrim(robot, enemyTrim, enemyRoot.position);
 
                 const enemy = {
-                    maxHp: enemyConfig.maxHp,
-                    hp: enemyConfig.maxHp,
-                    speed: enemyConfig.speed,
+                    maxHp,
+                    hp: maxHp,
+                    speed,
                     root: enemyRoot,
                     healthBar: null,
                     healthFill: null,
@@ -723,7 +741,8 @@
                     flashTimer: 0,
                     flashDuration: enemyConfig.flashDuration,
                     isFlashing: false,
-                    trimState: enemyTrim
+                    trimState: enemyTrim,
+                    dropType
                 };
 
                 setEnemyFlashVisual(enemy, false);
@@ -744,13 +763,15 @@
             ).normalize();
             const enemyX = gameState.playerPos.x + forward.x * spawnDistance;
             const enemyZ = gameState.playerPos.z + forward.z * spawnDistance;
-            await createEnemyAt(enemyX, enemyZ);
+            await createEnemyAt(enemyX, enemyZ, { dropType: 'wave1' });
         }
 
         async function spawnLevelTwoEnemies() {
             if (levelState.wave2Spawned) return;
             levelState.wave2Spawned = true;
             levelState.current = 2;
+            levelState.wave2BuffDropsTotal = 3;
+            levelState.wave2BuffCollected = 0;
 
             const spawnDistance = 24;
             const spacing = 3.5;
@@ -764,8 +785,29 @@
             const offsets = [-spacing, 0, spacing];
             for (const offset of offsets) {
                 const pos = center.clone().add(right.clone().multiplyScalar(offset));
-                await createEnemyAt(pos.x, pos.z);
+                await createEnemyAt(pos.x, pos.z, { dropType: 'wave2' });
             }
+        }
+
+        async function spawnBossEnemy() {
+            if (levelState.bossSpawned) return;
+            levelState.bossSpawned = true;
+            levelState.current = 3;
+
+            const spawnDistance = 28;
+            const playerYaw = player ? player.rotation.y : 0;
+            const forward = new THREE.Vector3(
+                Math.sin(playerYaw), 0, Math.cos(playerYaw)
+            ).normalize();
+            const enemyX = gameState.playerPos.x + forward.x * spawnDistance;
+            const enemyZ = gameState.playerPos.z + forward.z * spawnDistance;
+
+            await createEnemyAt(enemyX, enemyZ, {
+                maxHp: 500,
+                speed: enemyConfig.speed * 0.9,
+                scaleMultiplier: 2.2,
+                dropType: null
+            });
         }
 
         // 初始化场景
@@ -859,8 +901,8 @@
                             enemy.alive = false;
                             scene.remove(enemy.root);
                             enemies.splice(e, 1);
-                            if (levelState.current === 1 && !buffState.dropped && !buffState.collected) {
-                                spawnAttackSpeedBuff(closest);
+                            if (enemy.dropType) {
+                                spawnAttackSpeedBuff(closest, enemy.dropType);
                             }
                         }
                         break;
@@ -1113,16 +1155,15 @@
             playerState.attackSpeedMultiplier = 1;
             levelState.current = 1;
             levelState.wave2Spawned = false;
+            levelState.wave2BuffDropsTotal = 0;
+            levelState.wave2BuffCollected = 0;
+            levelState.bossSpawned = false;
             enemies.forEach((enemy) => {
                 if (enemy.root) scene.remove(enemy.root);
             });
             enemies = [];
-            if (buffState.drop) {
-                scene.remove(buffState.drop);
-            }
-            buffState.drop = null;
-            buffState.dropped = false;
-            buffState.collected = false;
+            buffState.drops.forEach((drop) => scene.remove(drop.mesh));
+            buffState.drops = [];
             buffState.bobTime = 0;
             updatePlayerHealthUI();
             updateBuffUI();
