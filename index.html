@@ -62,6 +62,7 @@
     <div id="ui">
         <div>克罗斯星探险</div>
         <div id="score">收集的晶体: 0</div>
+        <div id="playerHp">主角生命: 100 / 100</div>
     </div>
     <div id="controls">
         WASD 移动 | 鼠标拖拽旋转视角 | 滚轮缩放 | 空格跳跃 | J 射击
@@ -108,6 +109,16 @@
             tmpNormal: new THREE.Vector3(),
             tmpPoint: new THREE.Vector3()
         };
+        const enemyTrim = {
+            enabled: true,
+            bottomClip: 0.08,
+            clipPlane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
+            clipTarget: null,
+            localClipHeight: 0,
+            tmpQuat: new THREE.Quaternion(),
+            tmpNormal: new THREE.Vector3(),
+            tmpPoint: new THREE.Vector3()
+        };
         const modelFit = {
             targetHeight: 1.8,
             footGroundOffset: 0.03
@@ -134,11 +145,26 @@
         };
         const shootingState = {
             bullets: [],
-            rocks: [],
             speed: 20,
             life: 1.8,
             radius: 0.09,
             cooldown: 0.2,
+            cooldownLeft: 0
+        };
+        const enemyState = {
+            maxHp: 100,
+            hp: 100,
+            speed: 5 / 3, // 敌人速度=主角(5)的三分之一
+            root: null,
+            healthBar: null,
+            healthFill: null,
+            alive: false
+        };
+        const playerState = {
+            maxHp: 100,
+            hp: 100,
+            touchDamage: 5,
+            hitCooldown: 0.55,
             cooldownLeft: 0
         };
 
@@ -325,29 +351,115 @@
             animationState.visualRoot.rotation.x = isMoving ? Math.sin(t * 2.0) * 0.03 : 0;
         }
 
-        function applyTrimMaterialClipping(root) {
+        function applyTrimMaterialClipping(root, trimState = modelTrim) {
             root.traverse((child) => {
                 if (!child.isMesh) return;
                 const mats = Array.isArray(child.material) ? child.material : [child.material];
                 mats.forEach((mat) => {
                     if (!mat) return;
-                    mat.clippingPlanes = [modelTrim.clipPlane];
+                    mat.clippingPlanes = [trimState.clipPlane];
                     mat.clipShadows = true;
                     mat.needsUpdate = true;
                 });
             });
         }
 
-        function calibrateModelTrim(target) {
-            if (!modelTrim.enabled || !target) return;
+        function calibrateModelTrim(target, trimState = modelTrim, anchorPos = gameState.playerPos) {
+            if (!trimState.enabled || !target) return;
             const referenceWorld = new THREE.Vector3(
-                gameState.playerPos.x,
-                gameState.playerPos.y + modelTrim.bottomClip,
-                gameState.playerPos.z
+                anchorPos.x,
+                anchorPos.y + trimState.bottomClip,
+                anchorPos.z
             );
+            target.updateMatrixWorld(true);
             const referenceLocal = target.worldToLocal(referenceWorld.clone());
-            modelTrim.clipTarget = target;
-            modelTrim.localClipHeight = referenceLocal.y;
+            trimState.clipTarget = target;
+            trimState.localClipHeight = referenceLocal.y;
+        }
+
+        function updateTrimPlane(trimState, fallbackTarget) {
+            if (!trimState.enabled) return;
+            const clipTarget = trimState.clipTarget || fallbackTarget;
+            if (!clipTarget) return;
+
+            const normal = trimState.tmpNormal
+                .set(0, 1, 0)
+                .applyQuaternion(clipTarget.getWorldQuaternion(trimState.tmpQuat))
+                .normalize();
+            const point = clipTarget.localToWorld(
+                trimState.tmpPoint.set(0, trimState.localClipHeight, 0)
+            );
+            trimState.clipPlane.setFromNormalAndCoplanarPoint(normal, point);
+        }
+
+        function tintRobotRed(root) {
+            root.traverse((child) => {
+                if (!child.isMesh || !child.material) return;
+                const mats = Array.isArray(child.material) ? child.material : [child.material];
+                const tinted = mats.map((mat) => {
+                    const cloned = mat.clone();
+                    if (cloned.color) cloned.color.setHex(0xff0000);
+                    if (cloned.map) cloned.map = null;
+                    if (cloned.emissive) {
+                        cloned.emissive.setHex(0xff2222);
+                        cloned.emissiveIntensity = 0.45;
+                    }
+                    if ('roughness' in cloned) cloned.roughness = 0.45;
+                    if ('metalness' in cloned) cloned.metalness = 0.18;
+                    return cloned;
+                });
+                child.material = Array.isArray(child.material) ? tinted : tinted[0];
+            });
+        }
+
+        function createEnemyHealthBar(targetRoot) {
+            const barGroup = new THREE.Group();
+            barGroup.position.set(0, 2.55, 0);
+
+            const bg = new THREE.Mesh(
+                new THREE.PlaneGeometry(1.22, 0.17),
+                new THREE.MeshBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.9 })
+            );
+            barGroup.add(bg);
+
+            const fill = new THREE.Mesh(
+                new THREE.PlaneGeometry(1.16, 0.11),
+                new THREE.MeshBasicMaterial({ color: 0x66ff66 })
+            );
+            fill.position.z = 0.001;
+            barGroup.add(fill);
+
+            targetRoot.add(barGroup);
+            enemyState.healthBar = barGroup;
+            enemyState.healthFill = fill;
+            updateEnemyHealthBar();
+        }
+
+        function updateEnemyHealthBar() {
+            if (!enemyState.healthFill) return;
+            const ratio = clamp(enemyState.hp / enemyState.maxHp, 0, 1);
+            enemyState.healthFill.scale.x = ratio;
+            enemyState.healthFill.position.x = -0.58 * (1 - ratio);
+            if (ratio > 0.6) {
+                enemyState.healthFill.material.color.setHex(0x66ff66);
+            } else if (ratio > 0.3) {
+                enemyState.healthFill.material.color.setHex(0xffcc33);
+            } else {
+                enemyState.healthFill.material.color.setHex(0xff4444);
+            }
+        }
+
+        function updatePlayerHealthUI() {
+            const hpText = document.getElementById('playerHp');
+            if (!hpText) return;
+            hpText.textContent = `主角生命: ${playerState.hp} / ${playerState.maxHp}`;
+            if (playerState.hp > 60) {
+                hpText.style.color = '#ffffff';
+            } else if (playerState.hp > 30) {
+                hpText.style.color = '#ffd24d';
+            } else {
+                hpText.style.color = '#ff6a6a';
+            }
         }
 
         function removeRobotBaseMeshes(root) {
@@ -430,16 +542,68 @@
             }
         }
 
+        async function createEnemy() {
+            const loader = new FBXLoader();
+            try {
+                const robot = await loader.loadAsync('robot.fbx');
+                const enemyRoot = new THREE.Group();
+                enemyRoot.add(robot);
+
+                removeRobotBaseMeshes(robot);
+                tintRobotRed(robot);
+
+                robot.traverse((child) => {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                    }
+                });
+
+                const box = new THREE.Box3().setFromObject(robot);
+                const size = box.getSize(new THREE.Vector3());
+                if (size.y > 0) {
+                    const scaleFactor = modelFit.targetHeight / size.y;
+                    robot.scale.setScalar(scaleFactor);
+                }
+
+                const normalizedBox = new THREE.Box3().setFromObject(robot);
+                const center = normalizedBox.getCenter(new THREE.Vector3());
+                robot.position.set(
+                    -center.x,
+                    -normalizedBox.min.y - modelFit.footGroundOffset,
+                    -center.z
+                );
+
+                const enemyX = gameState.playerPos.x + 6;
+                const enemyZ = gameState.playerPos.z - 6;
+                const enemyY = getGroundHeightAt(enemyX, enemyZ) + modelFit.footGroundOffset;
+                enemyRoot.position.set(enemyX, enemyY, enemyZ);
+                enemyRoot.rotation.y = -Math.PI * 0.75;
+                scene.add(enemyRoot);
+                if (enemyTrim.enabled) {
+                    applyTrimMaterialClipping(robot, enemyTrim);
+                    calibrateModelTrim(robot, enemyTrim, enemyRoot.position);
+                }
+                enemyState.root = enemyRoot;
+                enemyState.hp = enemyState.maxHp;
+                enemyState.alive = true;
+                createEnemyHealthBar(enemyRoot);
+                return enemyRoot;
+            } catch (error) {
+                console.warn('enemy robot.fbx 加载失败:', error);
+                return null;
+            }
+        }
+
         // 初始化场景
         createGround();
 
         // 添加岩石
-        const rocks = shootingState.rocks;
         for (let i = 0; i < 15; i++) {
             const x = (Math.random() - 0.5) * 25;
             const z = (Math.random() - 0.5) * 25;
             const scale = 0.8 + Math.random() * 0.8;
-            rocks.push(createRock(x, z, scale));
+            createRock(x, z, scale);
         }
 
         // 添加晶体
@@ -451,6 +615,7 @@
         }
 
         let player = null;
+        let enemy = null;
 
         function shootBullet() {
             if (!player || shootingState.cooldownLeft > 0) return;
@@ -492,23 +657,64 @@
                 bullet.life -= delta;
                 bullet.mesh.position.addScaledVector(bullet.velocity, delta);
 
-                let hit = false;
-                for (let r = rocks.length - 1; r >= 0; r--) {
-                    const rock = rocks[r];
-                    if (!rock || !rock.parent) continue;
-                    if (bullet.mesh.position.distanceTo(rock.position) < 0.75) {
-                        scene.remove(rock);
-                        rocks.splice(r, 1);
-                        hit = true;
-                        break;
+                let hitEnemy = false;
+                if (enemyState.alive && enemyState.root) {
+                    const hitDist = bullet.mesh.position.distanceTo(enemyState.root.position);
+                    if (hitDist < 1.1) {
+                        enemyState.hp = Math.max(0, enemyState.hp - 10);
+                        updateEnemyHealthBar();
+                        hitEnemy = true;
+                        if (enemyState.hp <= 0) {
+                            enemyState.alive = false;
+                            scene.remove(enemyState.root);
+                            enemyState.root = null;
+                            enemy = null;
+                        }
                     }
                 }
 
                 const outOfBounds = Math.abs(bullet.mesh.position.x) > 40 || Math.abs(bullet.mesh.position.z) > 40;
-                if (hit || bullet.life <= 0 || outOfBounds) {
+                if (hitEnemy || bullet.life <= 0 || outOfBounds) {
                     scene.remove(bullet.mesh);
                     shootingState.bullets.splice(i, 1);
                 }
+            }
+        }
+
+        function updateEnemy(delta) {
+            if (!enemyState.alive || !enemyState.root) return;
+            if (playerState.cooldownLeft > 0) {
+                playerState.cooldownLeft = Math.max(0, playerState.cooldownLeft - delta);
+            }
+
+            const toPlayer = new THREE.Vector3(
+                gameState.playerPos.x - enemyState.root.position.x,
+                0,
+                gameState.playerPos.z - enemyState.root.position.z
+            );
+            const distance = toPlayer.length();
+
+            if (distance > 1.6) {
+                toPlayer.normalize();
+                const step = enemyState.speed * delta;
+                enemyState.root.position.x += toPlayer.x * step;
+                enemyState.root.position.z += toPlayer.z * step;
+
+                const targetYaw = Math.atan2(toPlayer.x, toPlayer.z);
+                enemyState.root.rotation.y = THREE.MathUtils.lerp(enemyState.root.rotation.y, targetYaw, 0.1);
+            }
+
+            enemyState.root.position.y =
+                getGroundHeightAt(enemyState.root.position.x, enemyState.root.position.z) + modelFit.footGroundOffset;
+
+            if (enemyState.healthBar) {
+                enemyState.healthBar.lookAt(camera.position);
+            }
+
+            if (distance <= 1.6 && playerState.cooldownLeft <= 0 && playerState.hp > 0) {
+                playerState.hp = Math.max(0, playerState.hp - playerState.touchDamage);
+                playerState.cooldownLeft = playerState.hitCooldown;
+                updatePlayerHealthUI();
             }
         }
 
@@ -609,19 +815,7 @@
                 return;
             }
 
-            if (modelTrim.enabled) {
-                const clipTarget = modelTrim.clipTarget || animationState.visualRoot || player;
-                if (clipTarget) {
-                    const normal = modelTrim.tmpNormal
-                        .set(0, 1, 0)
-                        .applyQuaternion(clipTarget.getWorldQuaternion(modelTrim.tmpQuat))
-                        .normalize();
-                    const point = clipTarget.localToWorld(
-                        modelTrim.tmpPoint.set(0, modelTrim.localClipHeight, 0)
-                    );
-                    modelTrim.clipPlane.setFromNormalAndCoplanarPoint(normal, point);
-                }
-            }
+            updateTrimPlane(modelTrim, animationState.visualRoot || player);
 
             if (isMoving) {
                 const targetYaw = Math.atan2(moveDir.x, moveDir.z);
@@ -667,7 +861,11 @@
 
             const delta = clock.getDelta();
             updatePlayer(delta);
+            updateEnemy(delta);
             updateBullets(delta);
+            if (enemy) {
+                updateTrimPlane(enemyTrim, enemy);
+            }
 
             // 晶体旋转动画
             crystals.forEach(crystal => {
@@ -691,7 +889,11 @@
         async function startGame() {
             const loadingEl = document.getElementById('loading');
             loadingEl.textContent = '加载机器人模型中...';
+            playerState.hp = playerState.maxHp;
+            playerState.cooldownLeft = 0;
+            updatePlayerHealthUI();
             player = await createPlayer();
+            enemy = await createEnemy();
             if (player) {
                 player.rotation.y = 0;
             }
