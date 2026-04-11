@@ -114,6 +114,7 @@
 
         const PLAYER_MODEL_PATH = 'assets/dragon_knight/Meshy_AI_Blazing_Dragon_Knight_biped/Meshy_AI_Blazing_Dragon_Knight_biped_Animation_Male_Head_Down_Charge_withSkin.fbx';
         const ENEMY_MODEL_PATH = 'robot.fbx';
+        const PLAYER_SCALE_MULTIPLIER = 2.2;
 
         // 游戏状态
         const gameState = {
@@ -752,7 +753,7 @@
                 const box = new THREE.Box3().setFromObject(robot);
                 const size = box.getSize(new THREE.Vector3());
                 if (size.y > 0) {
-                    const scaleFactor = modelFit.targetHeight / size.y;
+                    const scaleFactor = (modelFit.targetHeight * PLAYER_SCALE_MULTIPLIER) / size.y;
                     robot.scale.setScalar(scaleFactor);
                 }
 
