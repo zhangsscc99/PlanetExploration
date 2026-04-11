@@ -112,6 +112,9 @@
         import * as THREE from 'three';
         import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 
+        const PLAYER_MODEL_PATH = 'assets/dragon_knight/Meshy_AI_Blazing_Dragon_Knight_biped/Meshy_AI_Blazing_Dragon_Knight_biped_Animation_Male_Head_Down_Charge_withSkin.fbx';
+        const ENEMY_MODEL_PATH = 'robot.fbx';
+
         // 游戏状态
         const gameState = {
             score: 0,
@@ -128,7 +131,9 @@
             hasBuiltInAnimations: false,
             visualRoot: null,
             baseVisualY: 0,
-            proceduralTime: 0
+            proceduralTime: 0,
+            visualAnchorPos: new THREE.Vector3(),
+            visualAnchorQuat: new THREE.Quaternion()
         };
         const modelTrim = {
             enabled: true,
@@ -364,6 +369,15 @@
             return fallback;
         }
 
+        function makePoseOnlyClip(clip) {
+            // 去掉所有平移轨道，只保留骨骼姿态（旋转/缩放）
+            const filteredTracks = (clip.tracks || []).filter((track) => {
+                const trackName = (track.name || '').toLowerCase();
+                return !trackName.includes('.position');
+            });
+            return new THREE.AnimationClip(clip.name, clip.duration, filteredTracks);
+        }
+
         function setupAnimationActions(clipSource) {
             const clips = clipSource.animations || [];
             if (clips.length === 0) {
@@ -376,7 +390,7 @@
 
             for (const clip of clips) {
                 const name = clip.name.toLowerCase();
-                const action = animationState.mixer.clipAction(clip);
+                const action = animationState.mixer.clipAction(makePoseOnlyClip(clip));
                 if (!animationState.actions.idle && (name.includes('idle') || name.includes('stand'))) {
                     animationState.actions.idle = action;
                 }
@@ -385,19 +399,32 @@
                 }
             }
 
-            // 如果素材命名不规范，至少保证能播放一个动作
-            const fallbackAction = animationState.mixer.clipAction(clips[0]);
-            if (!animationState.actions.idle) animationState.actions.idle = fallbackAction;
+            // 如果素材命名不规范：优先保证“移动时有动作”，静止时不强制播放
+            const fallbackAction = animationState.mixer.clipAction(makePoseOnlyClip(clips[0]));
             if (!animationState.actions.walk) animationState.actions.walk = fallbackAction;
         }
 
         function setPlayerAction(nextAction) {
-            if (!nextAction || animationState.currentAction === nextAction) return;
+            if (!nextAction) {
+                if (animationState.currentAction) {
+                    animationState.currentAction.stop();
+                    animationState.currentAction = null;
+                }
+                return;
+            }
+            if (animationState.currentAction === nextAction) return;
             if (animationState.currentAction) {
                 animationState.currentAction.fadeOut(0.2);
             }
             nextAction.reset().fadeIn(0.2).play();
             animationState.currentAction = nextAction;
+        }
+
+        // 锁定可视模型根节点，避免动画自带位移/旋转干扰玩家操控位移
+        function lockVisualRootTransform() {
+            if (!animationState.visualRoot) return;
+            animationState.visualRoot.position.copy(animationState.visualAnchorPos);
+            animationState.visualRoot.quaternion.copy(animationState.visualAnchorQuat);
         }
 
         function updateProceduralAnimation(delta, isMoving) {
@@ -711,12 +738,9 @@
         async function createPlayer() {
             const loader = new FBXLoader();
             try {
-                const robot = await loader.loadAsync('robot.fbx');
+                const robot = await loader.loadAsync(PLAYER_MODEL_PATH);
                 const robotRoot = new THREE.Group();
                 robotRoot.add(robot);
-
-                // 先移除底座，再做尺寸归一和落地对齐，避免脚底悬空
-                removeRobotBaseMeshes(robot);
 
                 robot.traverse((child) => {
                     if (child.isMesh) {
@@ -745,6 +769,8 @@
                 scene.add(robotRoot);
                 animationState.visualRoot = robot;
                 animationState.baseVisualY = robot.position.y;
+                animationState.visualAnchorPos.copy(robot.position);
+                animationState.visualAnchorQuat.copy(robot.quaternion);
                 if (modelTrim.enabled) {
                     applyTrimMaterialClipping(robot);
                     calibrateModelTrim(robot);
@@ -752,7 +778,7 @@
                 setupAnimationActions(robot);
                 return robotRoot;
             } catch (error) {
-                console.warn('robot.fbx 加载失败，使用默认角色:', error);
+                console.warn('主角模型加载失败，使用默认角色:', error);
                 return createFallbackPlayer();
             }
         }
@@ -766,7 +792,7 @@
                     scaleMultiplier = 1,
                     dropType = 'generic'
                 } = options;
-                const robot = await loader.loadAsync('robot.fbx');
+                const robot = await loader.loadAsync(ENEMY_MODEL_PATH);
                 const enemyRoot = new THREE.Group();
                 enemyRoot.add(robot);
 
@@ -1139,9 +1165,12 @@
             }
 
             if (animationState.hasBuiltInAnimations && animationState.mixer) {
-                const nextAction = isMoving ? animationState.actions.walk : animationState.actions.idle;
+                const nextAction = isMoving ? animationState.actions.walk : null;
                 setPlayerAction(nextAction);
-                animationState.mixer.update(delta);
+                if (nextAction) {
+                    animationState.mixer.update(delta);
+                }
+                lockVisualRootTransform();
             } else {
                 updateProceduralAnimation(delta, isMoving);
             }
@@ -1209,7 +1238,7 @@
         // 初始化玩家后开始游戏
         async function startGame() {
             const loadingEl = document.getElementById('loading');
-            loadingEl.textContent = '加载机器人模型中...';
+            loadingEl.textContent = '加载龙骑士模型中...';
             gameState.isGameOver = false;
             const overlay = document.getElementById('gameOverOverlay');
             if (overlay) overlay.style.display = 'none';
