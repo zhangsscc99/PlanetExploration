@@ -88,6 +88,7 @@
         <div id="score">收集的晶体: 0</div>
         <div id="playerHp">主角生命: 100 / 100</div>
         <div id="buffStatus">攻速倍率: x1.00</div>
+        <div id="atkStatus">攻击倍率: x1.00</div>
     </div>
     <div id="controls">
         WASD 移动 | 鼠标拖拽旋转视角 | 滚轮缩放 | 空格跳跃 | J 射击
@@ -174,7 +175,8 @@
             life: 1.8,
             radius: 0.09,
             cooldown: 0.2,
-            cooldownLeft: 0
+            cooldownLeft: 0,
+            baseDamage: 10
         };
         const enemyConfig = {
             maxHp: 100,
@@ -194,7 +196,8 @@
             touchDamage: 5,
             hitCooldown: 1.5,
             cooldownLeft: 0,
-            attackSpeedMultiplier: 1
+            attackSpeedMultiplier: 1,
+            attackDamageMultiplier: 1
         };
         const buffState = {
             drops: [],
@@ -225,6 +228,30 @@
         // 地面与 createGround 使用同一套高度函数，保证角色贴地
         function getGroundHeightAt(x, z) {
             return Math.sin(x * 0.3) * Math.cos(z * 0.3) * 0.3;
+        }
+
+        function getMovementLimit() {
+            const halfWorldSize = (worldConfig.tileSize * worldConfig.tileCountPerAxis) / 2;
+            return halfWorldSize - worldConfig.borderPadding;
+        }
+
+        function getClampedSpawnInFront(distance, sideOffset = 0) {
+            const playerYaw = player ? player.rotation.y : 0;
+            const forward = new THREE.Vector3(
+                Math.sin(playerYaw), 0, Math.cos(playerYaw)
+            ).normalize();
+            const right = new THREE.Vector3(forward.z, 0, -forward.x).normalize();
+
+            const raw = gameState.playerPos.clone()
+                .add(forward.multiplyScalar(distance))
+                .add(right.multiplyScalar(sideOffset));
+
+            const movementLimit = getMovementLimit();
+            return new THREE.Vector3(
+                clamp(raw.x, -movementLimit, movementLimit),
+                0,
+                clamp(raw.z, -movementLimit, movementLimit)
+            );
         }
 
         // 光照
@@ -488,7 +515,8 @@
         function createEnemyHealthBar(enemy) {
             const targetRoot = enemy.root;
             const barGroup = new THREE.Group();
-            barGroup.position.set(0, 2.55, 0);
+            const barHeight = Math.max(2.55, (enemy.visualHeight || 1.8) + 0.85);
+            barGroup.position.set(0, barHeight, 0);
 
             const bg = new THREE.Mesh(
                 new THREE.PlaneGeometry(1.22, 0.17),
@@ -541,6 +569,11 @@
             if (!buffText) return;
             buffText.textContent = `攻速倍率: x${playerState.attackSpeedMultiplier.toFixed(2)}`;
             buffText.style.color = playerState.attackSpeedMultiplier > 1 ? '#7dff8a' : '#ffffff';
+
+            const atkText = document.getElementById('atkStatus');
+            if (!atkText) return;
+            atkText.textContent = `攻击倍率: x${playerState.attackDamageMultiplier.toFixed(2)}`;
+            atkText.style.color = playerState.attackDamageMultiplier > 1 ? '#ffb86b' : '#ffffff';
         }
 
         function setGameOver() {
@@ -569,6 +602,43 @@
             buffState.drops.push({ mesh: buff, type: dropType });
         }
 
+        function spawnGreatSwordBuff(position) {
+            const swordGroup = new THREE.Group();
+
+            const blade = new THREE.Mesh(
+                new THREE.BoxGeometry(0.14, 1.35, 0.08),
+                new THREE.MeshStandardMaterial({
+                    color: 0xd8dbe3,
+                    metalness: 0.9,
+                    roughness: 0.2,
+                    emissive: 0x222222,
+                    emissiveIntensity: 0.2
+                })
+            );
+            blade.position.y = 0.85;
+            swordGroup.add(blade);
+
+            const guard = new THREE.Mesh(
+                new THREE.BoxGeometry(0.42, 0.08, 0.12),
+                new THREE.MeshStandardMaterial({ color: 0x9b6a2f, metalness: 0.5, roughness: 0.45 })
+            );
+            guard.position.y = 0.18;
+            swordGroup.add(guard);
+
+            const handle = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.045, 0.055, 0.34, 12),
+                new THREE.MeshStandardMaterial({ color: 0x3a2c1a, roughness: 0.8, metalness: 0.1 })
+            );
+            handle.position.y = -0.05;
+            swordGroup.add(handle);
+
+            swordGroup.position.copy(position);
+            swordGroup.position.y += 1.1;
+            scene.add(swordGroup);
+
+            buffState.drops.push({ mesh: swordGroup, type: 'sword' });
+        }
+
         function updateBuff(delta) {
             if (buffState.drops.length === 0 || !player) return;
             buffState.bobTime += delta;
@@ -584,17 +654,22 @@
                 if (pickupDist < 1.1) {
                     scene.remove(mesh);
                     buffState.drops.splice(i, 1);
-                    playerState.attackSpeedMultiplier *= 1.1;
-                    updateBuffUI();
-                    if (drop.type === 'wave1' && levelState.current === 1) {
-                        spawnLevelTwoEnemies();
-                    } else if (drop.type === 'wave2') {
-                        levelState.wave2BuffCollected += 1;
-                        if (
-                            levelState.wave2BuffCollected >= levelState.wave2BuffDropsTotal &&
-                            !levelState.bossSpawned
-                        ) {
-                            spawnBossEnemy();
+                    if (drop.type === 'sword') {
+                        playerState.attackDamageMultiplier *= 1.5;
+                        updateBuffUI();
+                    } else {
+                        playerState.attackSpeedMultiplier *= 1.1;
+                        updateBuffUI();
+                        if (drop.type === 'wave1' && levelState.current === 1) {
+                            spawnLevelTwoEnemies();
+                        } else if (drop.type === 'wave2') {
+                            levelState.wave2BuffCollected += 1;
+                            if (
+                                levelState.wave2BuffCollected >= levelState.wave2BuffDropsTotal &&
+                                !levelState.bossSpawned
+                            ) {
+                                spawnBossEnemy();
+                            }
                         }
                     }
                 }
@@ -658,6 +733,7 @@
                 }
 
                 const normalizedBox = new THREE.Box3().setFromObject(robot);
+                const normalizedSize = normalizedBox.getSize(new THREE.Vector3());
                 const center = normalizedBox.getCenter(new THREE.Vector3());
                 robot.position.set(
                     -center.x,
@@ -712,6 +788,7 @@
                 }
 
                 const normalizedBox = new THREE.Box3().setFromObject(robot);
+                const normalizedSize = normalizedBox.getSize(new THREE.Vector3());
                 const center = normalizedBox.getCenter(new THREE.Vector3());
                 robot.position.set(
                     -center.x,
@@ -742,7 +819,8 @@
                     flashDuration: enemyConfig.flashDuration,
                     isFlashing: false,
                     trimState: enemyTrim,
-                    dropType
+                    dropType,
+                    visualHeight: normalizedSize.y
                 };
 
                 setEnemyFlashVisual(enemy, false);
@@ -756,14 +834,8 @@
         }
 
         async function spawnLevelOneEnemy() {
-            const spawnDistance = 24;
-            const playerYaw = player ? player.rotation.y : 0;
-            const forward = new THREE.Vector3(
-                Math.sin(playerYaw), 0, Math.cos(playerYaw)
-            ).normalize();
-            const enemyX = gameState.playerPos.x + forward.x * spawnDistance;
-            const enemyZ = gameState.playerPos.z + forward.z * spawnDistance;
-            await createEnemyAt(enemyX, enemyZ, { dropType: 'wave1' });
+            const spawn = getClampedSpawnInFront(18);
+            await createEnemyAt(spawn.x, spawn.z, { dropType: 'wave1' });
         }
 
         async function spawnLevelTwoEnemies() {
@@ -773,18 +845,10 @@
             levelState.wave2BuffDropsTotal = 3;
             levelState.wave2BuffCollected = 0;
 
-            const spawnDistance = 24;
             const spacing = 3.5;
-            const playerYaw = player ? player.rotation.y : 0;
-            const forward = new THREE.Vector3(
-                Math.sin(playerYaw), 0, Math.cos(playerYaw)
-            ).normalize();
-            const right = new THREE.Vector3(forward.z, 0, -forward.x).normalize();
-            const center = gameState.playerPos.clone().add(forward.multiplyScalar(spawnDistance));
-
             const offsets = [-spacing, 0, spacing];
             for (const offset of offsets) {
-                const pos = center.clone().add(right.clone().multiplyScalar(offset));
+                const pos = getClampedSpawnInFront(22, offset);
                 await createEnemyAt(pos.x, pos.z, { dropType: 'wave2' });
             }
         }
@@ -794,19 +858,13 @@
             levelState.bossSpawned = true;
             levelState.current = 3;
 
-            const spawnDistance = 28;
-            const playerYaw = player ? player.rotation.y : 0;
-            const forward = new THREE.Vector3(
-                Math.sin(playerYaw), 0, Math.cos(playerYaw)
-            ).normalize();
-            const enemyX = gameState.playerPos.x + forward.x * spawnDistance;
-            const enemyZ = gameState.playerPos.z + forward.z * spawnDistance;
+            const spawn = getClampedSpawnInFront(26);
 
-            await createEnemyAt(enemyX, enemyZ, {
+            await createEnemyAt(spawn.x, spawn.z, {
                 maxHp: 500,
                 speed: enemyConfig.speed * 0.9,
                 scaleMultiplier: 2.2,
-                dropType: null
+                dropType: 'sword'
             });
         }
 
@@ -891,7 +949,8 @@
 
                     if (hitDist < 1.1) {
                         bullet.mesh.position.copy(closest);
-                        enemy.hp = Math.max(0, enemy.hp - 10);
+                        const bulletDamage = shootingState.baseDamage * playerState.attackDamageMultiplier;
+                        enemy.hp = Math.max(0, enemy.hp - bulletDamage);
                         enemy.flashTimer = enemy.flashDuration;
                         setEnemyFlashVisual(enemy, true);
                         updateEnemyHealthBar(enemy);
@@ -901,7 +960,9 @@
                             enemy.alive = false;
                             scene.remove(enemy.root);
                             enemies.splice(e, 1);
-                            if (enemy.dropType) {
+                            if (enemy.dropType === 'sword') {
+                                spawnGreatSwordBuff(closest);
+                            } else if (enemy.dropType) {
                                 spawnAttackSpeedBuff(closest, enemy.dropType);
                             }
                         }
@@ -918,10 +979,12 @@
         }
 
         function updateEnemy(delta) {
+            if (!player) return;
             if (playerState.cooldownLeft > 0) {
                 playerState.cooldownLeft = Math.max(0, playerState.cooldownLeft - delta);
             }
             let nearestDist = Infinity;
+            const targetPos = player.position;
             for (const enemy of enemies) {
                 if (!enemy.alive || !enemy.root) continue;
 
@@ -933,16 +996,17 @@
                 }
 
                 const toPlayer = new THREE.Vector3(
-                    gameState.playerPos.x - enemy.root.position.x,
+                    targetPos.x - enemy.root.position.x,
                     0,
-                    gameState.playerPos.z - enemy.root.position.z
+                    targetPos.z - enemy.root.position.z
                 );
                 const distance = toPlayer.length();
+                if (!Number.isFinite(distance)) continue;
                 nearestDist = Math.min(nearestDist, distance);
 
                 if (distance > 1.6) {
                     toPlayer.normalize();
-                    const step = enemy.speed * delta;
+                    const step = Math.max(enemy.speed, 0.01) * delta;
                     enemy.root.position.x += toPlayer.x * step;
                     enemy.root.position.z += toPlayer.z * step;
 
@@ -1057,8 +1121,7 @@
             }
 
             // 边界限制
-            const halfWorldSize = (worldConfig.tileSize * worldConfig.tileCountPerAxis) / 2;
-            const movementLimit = halfWorldSize - worldConfig.borderPadding;
+            const movementLimit = getMovementLimit();
             gameState.playerPos.x = Math.max(-movementLimit, Math.min(movementLimit, gameState.playerPos.x));
             gameState.playerPos.z = Math.max(-movementLimit, Math.min(movementLimit, gameState.playerPos.z));
 
@@ -1072,7 +1135,7 @@
 
             if (isMoving) {
                 const targetYaw = Math.atan2(moveDir.x, moveDir.z);
-                player.rotation.y = THREE.MathUtils.lerp(player.rotation.y, targetYaw, 0.2);
+                player.rotation.y = targetYaw;
             }
 
             if (animationState.hasBuiltInAnimations && animationState.mixer) {
@@ -1153,6 +1216,7 @@
             playerState.hp = playerState.maxHp;
             playerState.cooldownLeft = 0;
             playerState.attackSpeedMultiplier = 1;
+            playerState.attackDamageMultiplier = 1;
             levelState.current = 1;
             levelState.wave2Spawned = false;
             levelState.wave2BuffDropsTotal = 0;
